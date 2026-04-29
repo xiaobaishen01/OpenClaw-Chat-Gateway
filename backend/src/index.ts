@@ -65,6 +65,7 @@ import {
   extractSettledAssistantOutcome,
   getHistoryTailActivity,
   getHistorySnapshot,
+  getUnknownHistorySnapshot,
   isNonTerminalAssistantMessage,
   shouldPreferSettledAssistantText,
 } from './chat-history-reconciliation';
@@ -10171,7 +10172,7 @@ app.post('/api/chat', async (req, res) => {
 
     const preRunHistorySnapshot = await client.getChatHistory(expectedSessionKey, CHAT_HISTORY_COMPLETION_PROBE_LIMIT)
       .then((history) => getHistorySnapshot(history))
-      .catch(() => ({ length: 0, latestSignature: '' }));
+      .catch(() => getUnknownHistorySnapshot());
     assertSessionInterruptionEpoch(normalizedSessionId, sessionInterruptionEpoch);
 
     const { runId, sessionKey: finalSessionKey } = await client.sendChatMessageStreaming({
@@ -10461,7 +10462,7 @@ app.post('/api/chat/regenerate', async (req, res) => {
     assertSessionInterruptionEpoch(sessionId, sessionInterruptionEpoch);
     const preRunHistorySnapshot = await client.getChatHistory(expectedSessionKey, CHAT_HISTORY_COMPLETION_PROBE_LIMIT)
       .then((history) => getHistorySnapshot(history))
-      .catch(() => ({ length: 0, latestSignature: '' }));
+      .catch(() => getUnknownHistorySnapshot());
     assertSessionInterruptionEpoch(sessionId, sessionInterruptionEpoch);
 
     const { runId, sessionKey: finalSessionKey } = await client.sendChatMessageStreaming({

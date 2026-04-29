@@ -8,6 +8,7 @@ export type ChatHistorySnapshot = {
   length: number;
   latestSignature: string;
   messageSignatures?: string[];
+  trusted?: boolean;
 };
 
 export type SettledAssistantOutcome =
@@ -71,6 +72,7 @@ function getMessageTimestampMs(message: any): number | null {
 }
 
 function hasHistoryTailChanges(messages: any[], baseline: ChatHistorySnapshot): boolean {
+  if (baseline.trusted === false) return false;
   if (messages.length === 0) return false;
   const latestMessage = messages[messages.length - 1];
   return messages.length > baseline.length
@@ -142,6 +144,16 @@ export function getHistorySnapshot(historyPayload: any): ChatHistorySnapshot {
     length: messages.length,
     latestSignature: createHistoryMessageSignature(latestMessage),
     messageSignatures: messages.map((message: any) => createHistoryMessageSignature(message)).filter(Boolean),
+    trusted: true,
+  };
+}
+
+export function getUnknownHistorySnapshot(): ChatHistorySnapshot {
+  return {
+    length: 0,
+    latestSignature: '',
+    messageSignatures: [],
+    trusted: false,
   };
 }
 
@@ -174,6 +186,10 @@ export function extractSettledAssistantOutcome(historyPayload: any, baseline: Ch
 }
 
 export function extractSettledAssistantOutcomeRecord(historyPayload: any, baseline: ChatHistorySnapshot): AssistantOutcomeRecord {
+  if (baseline.trusted === false) {
+    return { kind: 'none', timestampMs: null };
+  }
+
   const messages = Array.isArray(historyPayload?.messages) ? historyPayload.messages : [];
   if (!hasHistoryTailChanges(messages, baseline)) {
     return { kind: 'none', timestampMs: null };

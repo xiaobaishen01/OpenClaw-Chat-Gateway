@@ -10,6 +10,7 @@ import {
   extractSettledAssistantOutcome,
   getHistoryTailActivity,
   getHistorySnapshot,
+  getUnknownHistorySnapshot,
   isNonTerminalAssistantMessage,
   shouldPreferSettledAssistantText,
 } from './chat-history-reconciliation';
@@ -1533,7 +1534,7 @@ export class GroupChatEngine extends EventEmitter {
         : `agent:${runtimeContext.runtimeAgentId}:chat:${sessionKey}`;
       const preRunHistorySnapshot = await client.getChatHistory(expectedSessionKey, GROUP_HISTORY_COMPLETION_PROBE_LIMIT)
         .then((history) => getHistorySnapshot(history))
-        .catch(() => ({ length: 0, latestSignature: '' }));
+        .catch(() => getUnknownHistorySnapshot());
       this.throwIfGroupReset(groupId, effectiveResetEpoch);
 
       // Start streaming response
