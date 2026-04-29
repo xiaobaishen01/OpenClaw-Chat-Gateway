@@ -2072,11 +2072,21 @@ export class GroupChatEngine extends EventEmitter {
         finalEventText,
       );
       const splitProtectedResponse = splitGroupProcessOutput(protectedResponse, processStartTag, processEndTag);
-      const canonicalResponse = canonicalizeAssistantWorkspaceArtifacts(splitProtectedResponse.finalContent, {
+      let canonicalResponse = canonicalizeAssistantWorkspaceArtifacts(splitProtectedResponse.finalContent, {
         workspacePath: runtimeContext.workspacePath,
         startedAtMs: runStartedAt,
       });
-      const canonicalProcessContent = selectPreferredTextSnapshot(latestProcessOutput, splitProtectedResponse.processContent);
+      let canonicalProcessContent = selectPreferredTextSnapshot(latestProcessOutput, splitProtectedResponse.processContent);
+      if (!canonicalResponse.trim()) {
+        const canonicalFallbackResponse = canonicalizeAssistantWorkspaceArtifacts(splitProtectedResponse.processContent, {
+          workspacePath: runtimeContext.workspacePath,
+          startedAtMs: runStartedAt,
+        });
+        if (canonicalFallbackResponse.trim()) {
+          canonicalResponse = canonicalFallbackResponse;
+          canonicalProcessContent = '';
+        }
+      }
       latestProcessOutput = canonicalProcessContent;
       const mentionedIds = this.parseMentions(canonicalResponse, members);
       if (!canonicalResponse.trim() && msgId !== undefined) {

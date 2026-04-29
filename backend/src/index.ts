@@ -9626,6 +9626,34 @@ class ActiveRunManager {
     const rewritten = rewriteOpenClawMediaPaths(canonicalText, run.workspacePath);
     const rewrittenProcessContent = rewriteOpenClawMediaPaths(run.processContent, run.workspacePath);
     if (!rewritten.trim()) {
+      const canonicalFallbackText = canonicalizeAssistantWorkspaceArtifacts(run.modelProcessContent, {
+        workspacePath: run.workspacePath,
+        startedAtMs: run.startedAt,
+      });
+      const rewrittenFallbackText = rewriteOpenClawMediaPaths(canonicalFallbackText, run.workspacePath);
+      if (rewrittenFallbackText.trim()) {
+        run.text = canonicalFallbackText;
+        run.modelProcessContent = '';
+        run.processContent = run.toolProcessContent;
+        run.processStreaming = false;
+        const rewrittenFallbackProcessContent = rewriteOpenClawMediaPaths(run.processContent, run.workspacePath);
+
+        this.db.updateMessage(run.messageId, rewrittenFallbackText, run.modelUsed, rewrittenFallbackProcessContent);
+        run.visibleFinalText = rewrittenFallbackText;
+        run.visibleProcessContent = rewrittenFallbackProcessContent;
+        run.visibleProcessStreaming = false;
+        run.clients.forEach((res) => {
+          res.write(`data: ${JSON.stringify({
+            type: 'final',
+            text: rewrittenFallbackText,
+            process_content: rewrittenFallbackProcessContent,
+            process_streaming: false,
+          })}\n\n`);
+          res.end();
+        });
+        this.cleanupRun(run);
+        return;
+      }
       this.failRun(run, 'No text output returned from the run.');
       return;
     }
