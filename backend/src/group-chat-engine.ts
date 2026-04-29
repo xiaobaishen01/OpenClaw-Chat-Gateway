@@ -110,6 +110,7 @@ type GroupDirectImageGenerationResult = {
 export type GroupDirectImageGenerationHandler = (params: {
   prompt: string;
   intentText?: string;
+  intentContext?: Array<string | null | undefined> | string | null;
   outputDir: string;
 }) => Promise<GroupDirectImageGenerationResult | null>;
 
@@ -818,6 +819,7 @@ export class GroupChatEngine extends EventEmitter {
       workspacePath: string;
       uploadsPath: string;
       outputPath: string;
+      bootstrapContext?: string;
   }>;
   private tryGenerateImageForPrompt?: GroupDirectImageGenerationHandler;
   private buildImageGenerationStartProcessContent?: GroupDirectImageGenerationStartProcessBuilder;
@@ -834,6 +836,7 @@ export class GroupChatEngine extends EventEmitter {
       workspacePath: string;
       uploadsPath: string;
       outputPath: string;
+      bootstrapContext?: string;
     }>,
     tryGenerateImageForPrompt?: GroupDirectImageGenerationHandler,
     buildImageGenerationStartProcessContent?: GroupDirectImageGenerationStartProcessBuilder
@@ -1445,7 +1448,8 @@ export class GroupChatEngine extends EventEmitter {
       this.throwIfGroupReset(groupId, effectiveResetEpoch);
       const promptInput = [rewrittenTrigger.text, imageInspectionContext, documentToolingContext, audioTranscriptContext].filter(Boolean).join('\n\n').trim();
 
-      const imageGenerationStartProcessContent = !isResetCommand && isLikelyImageGenerationPrompt(triggerMsg)
+      const imageIntentContext = runtimeContext.bootstrapContext || '';
+      const imageGenerationStartProcessContent = !isResetCommand && isLikelyImageGenerationPrompt(triggerMsg, imageIntentContext)
         ? this.buildImageGenerationStartProcessContent?.()
         : null;
       if (imageGenerationStartProcessContent && msgId !== undefined) {
@@ -1470,6 +1474,7 @@ export class GroupChatEngine extends EventEmitter {
         ? await this.tryGenerateImageForPrompt({
           prompt: promptInput,
           intentText: triggerMsg,
+          intentContext: imageIntentContext,
           outputDir: runtimeContext.outputPath,
         })
         : null;

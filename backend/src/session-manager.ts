@@ -3,7 +3,6 @@ import type { DB, SessionRow } from './db';
 
 interface CreateSessionOptions {
   name?: string;
-  prompt?: string;
   agentId?: string;
   id?: string;
   process_start_tag?: string;
@@ -45,14 +44,11 @@ export class SessionManager extends EventEmitter {
     const maxPos = allSessions.length > 0 ? Math.max(...allSessions.map(s => s.position || 0)) : -1;
     const position = maxPos + 1;
 
-    // Auto-resolve agentId
     let finalAgentId = options.agentId || id;
-    let finalPrompt = options.prompt;
 
     const session: SessionRow = {
       id,
       name,
-      prompt: finalPrompt,
       agentId: finalAgentId,
       position,
       created_at: now,

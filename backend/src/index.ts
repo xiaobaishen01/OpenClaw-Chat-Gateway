@@ -65,13 +65,13 @@ import {
   extractSettledAssistantOutcome,
   getHistoryTailActivity,
   getHistorySnapshot,
-  getUnknownHistorySnapshot,
   isNonTerminalAssistantMessage,
   shouldPreferSettledAssistantText,
 } from './chat-history-reconciliation';
 import { selectPreferredTextSnapshot } from './text-snapshot-protection';
 import { getCurrentAppVersionInfo, getLatestVersionInfo, type LatestVersionInfo as AppLatestVersionInfo } from './app-version';
 import { isLikelyImageGenerationPrompt } from './image-generation-routing';
+import { readAgentBootstrapContextFromWorkspace } from './agent-bootstrap-context';
 
 const execPromise = util.promisify(exec);
 const execFilePromise = util.promisify(execFile);
@@ -2472,6 +2472,7 @@ async function generateImageThroughEndpoint(
 async function tryGenerateImageForPrompt(params: {
   prompt: string;
   intentText?: string;
+  intentContext?: Array<string | null | undefined> | string | null;
   outputDir: string;
 }): Promise<DirectImageGenerationResult | null> {
   const candidates = getConfiguredDirectImageGenerationCandidates();
@@ -2480,7 +2481,7 @@ async function tryGenerateImageForPrompt(params: {
   }
 
   const intentText = normalizeCliText(params.intentText) || params.prompt;
-  if (!isLikelyImageGenerationPrompt(intentText)) {
+  if (!isLikelyImageGenerationPrompt(intentText, params.intentContext)) {
     return null;
   }
 
@@ -6549,6 +6550,10 @@ function getSessionWorkspacePath(sessionId: string): string {
   return agentProvisioner.getWorkspacePath(agentId);
 }
 
+function readAgentBootstrapIntentContext(agentId: string): string {
+  return readAgentBootstrapContextFromWorkspace(agentProvisioner.getWorkspacePath(agentId));
+}
+
 function buildOpenClawChatSessionKey(sessionId: string, agentId: string): string {
   return sessionId.startsWith('agent:') ? sessionId : `agent:${agentId}:chat:${sessionId}`;
 }
@@ -7252,6 +7257,7 @@ async function prepareGroupRuntimeAgent(groupId: string, sourceAgentId: string):
   workspacePath: string;
   uploadsPath: string;
   outputPath: string;
+  bootstrapContext: string;
 }> {
   const { workspacePath, uploadsPath, outputPath } = ensureGroupWorkspace(groupId);
   const runtimeAgentId = getGroupRuntimeAgentId(groupId, sourceAgentId);
@@ -7284,6 +7290,7 @@ async function prepareGroupRuntimeAgent(groupId: string, sourceAgentId: string):
     workspacePath,
     uploadsPath,
     outputPath,
+    bootstrapContext: readAgentBootstrapContextFromWorkspace(runtimeWorkspacePath),
   };
 }
 
@@ -8574,7 +8581,6 @@ app.post('/api/sessions', async (req, res) => {
   const { id, name, soulContent, userContent, agentsContent, toolsContent, heartbeatContent, identityContent, model, process_start_tag, process_end_tag } = req.body;
   const fallbackMode = normalizeFallbackMode(req.body?.fallbackMode) ?? 'inherit';
   const fallbacks = normalizeFallbackList(req.body?.fallbacks);
-  const prompt = soulContent;
 
   const rawId = typeof id === 'string' ? id : '';
   const normalizedId = rawId.trim();
@@ -8593,13 +8599,13 @@ app.post('/api/sessions', async (req, res) => {
 
   try {
     // Provide basic default for first session if it doesn't exist
-    const newSession = sessionManager.createSession({ id: normalizedId, name, prompt, process_start_tag, process_end_tag });
+    const newSession = sessionManager.createSession({ id: normalizedId, name, process_start_tag, process_end_tag });
     const agentId = newSession.id;
 
     // Provision agent workspace
     await agentProvisioner.provision({ 
       agentId, 
-      soulContent: prompt,
+      soulContent,
       userContent,
       agentsContent,
       toolsContent,
@@ -8624,7 +8630,6 @@ app.put('/api/sessions/:id', async (req, res) => {
   const { name, soulContent, userContent, agentsContent, toolsContent, heartbeatContent, identityContent, model, process_start_tag, process_end_tag } = req.body;
   const fallbackMode = normalizeFallbackMode(req.body?.fallbackMode) ?? 'inherit';
   const fallbacks = normalizeFallbackList(req.body?.fallbacks);
-  const prompt = soulContent;
   const session = sessionManager.getSession(req.params.id);
   
   if (!session) {
@@ -8632,10 +8637,10 @@ app.put('/api/sessions/:id', async (req, res) => {
   }
 
   try {
-    const updated = sessionManager.updateSession(req.params.id, { name, prompt, process_start_tag, process_end_tag });
+    const updated = sessionManager.updateSession(req.params.id, { name, process_start_tag, process_end_tag });
     
     if (session.agentId) {
-      await agentProvisioner.updateSoul(session.agentId, prompt || '');
+      await agentProvisioner.updateSoul(session.agentId, soulContent || '');
       if (userContent !== undefined) agentProvisioner.writeAgentFile(session.agentId, 'USER.md', userContent);
       if (agentsContent !== undefined) agentProvisioner.writeAgentFile(session.agentId, 'AGENTS.md', agentsContent);
       if (toolsContent !== undefined) agentProvisioner.writeAgentFile(session.agentId, 'TOOLS.md', toolsContent);
@@ -8883,6 +8888,19 @@ function resolveChatFinalTextSnapshot(text: string, message: any): string {
     return '';
   }
   return selectPreferredTextSnapshot(text, extractOpenClawMessageText(message));
+}
+
+function buildLocalChatHistorySnapshot(sessionId: string): ChatHistorySnapshot {
+  const messages = db.getMessages(sessionId, CHAT_HISTORY_COMPLETION_PROBE_LIMIT)
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+      timestamp: message.created_at,
+      stopReason: message.role === 'assistant' && message.content.trim() ? 'stop' : undefined,
+    }));
+
+  return getHistorySnapshot({ messages });
 }
 
 function warmManagedHostToolingInBackground() {
@@ -9434,6 +9452,17 @@ class ActiveRunManager {
     const pendingErrorDetail = normalizeCliText(run.pendingErrorDetail) || '';
 
     try {
+      const terminalFinalEventText = run.finalEventText?.trim() ? run.finalEventText : '';
+      if (terminalFinalEventText && run.latestFinalEventAt !== undefined) {
+        const remainingSettleMs = run.latestFinalEventAt + CHAT_FINAL_EVENT_SETTLE_GRACE_MS - Date.now();
+        if (remainingSettleMs > 0) {
+          this.scheduleCompletionProbe(run, remainingSettleMs);
+          return;
+        }
+        this.finalizeRun(run, terminalFinalEventText);
+        return;
+      }
+
       await run.clientRef.waitForRun(run.runId, CHAT_STREAM_COMPLETION_WAIT_TIMEOUT_MS);
       if (run.firstCompletionWaitResolvedAt === undefined) {
         run.firstCompletionWaitResolvedAt = Date.now();
@@ -10010,17 +10039,14 @@ app.post('/api/chat', async (req, res) => {
     const allCharacters = db.getCharacters();
     const character = allCharacters.find(c => c.agentId === agentId);
     const agentName = sessionInfo?.name || character?.name || agentId;
-    const directImageModel = isLikelyImageGenerationPrompt(rawMessage)
+    const imageIntentContext = readAgentBootstrapIntentContext(agentId);
+    const directImageModel = isLikelyImageGenerationPrompt(rawMessage, imageIntentContext)
       ? getConfiguredDirectImageGenerationModel()
       : null;
     const modelUsed = directImageModel || agentProvisioner.readAgentModel(agentId) ||
       agentProvisioner.readAvailableModels().find(m => m.primary)?.id || '';
 
     if (sessionInfo) {
-      const history = db.getMessages(normalizedSessionId, 1);
-      if (history.length === 0 && sessionInfo.prompt) {
-        injectedInstructions += `${sessionInfo.prompt}\n\n`;
-      }
       if (sessionInfo.process_start_tag && sessionInfo.process_end_tag) {
         injectedInstructions += `【极其重要：输出格式规范】\n当前启用了结构化思考输出。你关于后续任务决断的所有内部思考、分析或工作执行过程，必须严格包裹在 ${sessionInfo.process_start_tag} 和 ${sessionInfo.process_end_tag} 之间！\n真正的最终沟通、回复语言写在标签外部。\n\n`;
       }
@@ -10085,6 +10111,7 @@ app.post('/api/chat', async (req, res) => {
       finalParentId = history.length > 0 ? history[history.length - 1].id : undefined;
     }
 
+    const preRunHistorySnapshot = buildLocalChatHistorySnapshot(normalizedSessionId);
     userMsgId = Number(db.saveMessage({ session_key: normalizedSessionId, parent_id: finalParentId, role: 'user', content: rawMessage }));
 
     assistantMsgId = Number(db.saveMessage({
@@ -10123,6 +10150,7 @@ app.post('/api/chat', async (req, res) => {
     const directImageResult = await tryGenerateImageForPrompt({
       prompt: rawMessage,
       intentText: rawMessage,
+      intentContext: imageIntentContext,
       outputDir: path.join(getSessionWorkspacePath(normalizedSessionId), 'output', 'image-generations'),
     });
     if (directImageResult) {
@@ -10168,11 +10196,6 @@ app.post('/api/chat', async (req, res) => {
       console.warn(`[chat] Failed to subscribe session events for session ${normalizedSessionId}:`, error);
     }
     const outgoingMessage = await prepareOutgoingMessage(finalMessage, agentId);
-    assertSessionInterruptionEpoch(normalizedSessionId, sessionInterruptionEpoch);
-
-    const preRunHistorySnapshot = await client.getChatHistory(expectedSessionKey, CHAT_HISTORY_COMPLETION_PROBE_LIMIT)
-      .then((history) => getHistorySnapshot(history))
-      .catch(() => getUnknownHistorySnapshot());
     assertSessionInterruptionEpoch(normalizedSessionId, sessionInterruptionEpoch);
 
     const { runId, sessionKey: finalSessionKey } = await client.sendChatMessageStreaming({
@@ -10345,16 +10368,13 @@ app.post('/api/chat/regenerate', async (req, res) => {
       db.deleteMessage(Number(latestReplyMessage.id));
     }
 
+    const preRunHistorySnapshot = buildLocalChatHistorySnapshot(sessionId);
     const sessionInfo = sessionManager.getSession(sessionId);
     const rawMessage = String(message);
     let finalMessage = rawMessage;
     let injectedInstructions = '';
 
     if (sessionInfo) {
-      const history = db.getMessages(sessionId, 1);
-      if (history.length === 0 && sessionInfo.prompt) {
-        injectedInstructions += `${sessionInfo.prompt}\n\n`;
-      }
       if (sessionInfo.process_start_tag && sessionInfo.process_end_tag) {
         injectedInstructions += `【极其重要：输出格式规范】\n当前启用了结构化思考输出。你关于后续任务决断的所有内部思考、分析或工作执行过程，必须严格包裹在 ${sessionInfo.process_start_tag} 和 ${sessionInfo.process_end_tag} 之间！\n真正的最终沟通、回复语言写在标签外部。\n\n`;
       }
@@ -10372,7 +10392,8 @@ app.post('/api/chat/regenerate', async (req, res) => {
     const allCharacters = db.getCharacters();
     const character = allCharacters.find(c => c.agentId === agentId);
     const agentName = sessionInfo?.name || character?.name || agentId;
-    const directImageModel = isLikelyImageGenerationPrompt(rawMessage)
+    const imageIntentContext = readAgentBootstrapIntentContext(agentId);
+    const directImageModel = isLikelyImageGenerationPrompt(rawMessage, imageIntentContext)
       ? getConfiguredDirectImageGenerationModel()
       : null;
     const modelUsed = directImageModel || agentProvisioner.readAgentModel(agentId) ||
@@ -10414,6 +10435,7 @@ app.post('/api/chat/regenerate', async (req, res) => {
     const directImageResult = await tryGenerateImageForPrompt({
       prompt: rawMessage,
       intentText: rawMessage,
+      intentContext: imageIntentContext,
       outputDir: path.join(getSessionWorkspacePath(String(sessionId)), 'output', 'image-generations'),
     });
     if (directImageResult) {
@@ -10459,10 +10481,6 @@ app.post('/api/chat/regenerate', async (req, res) => {
       console.warn(`[chat] Failed to subscribe session events for session ${sessionId}:`, error);
     }
     const outgoingMessage = await prepareOutgoingMessage(finalMessage, agentId);
-    assertSessionInterruptionEpoch(sessionId, sessionInterruptionEpoch);
-    const preRunHistorySnapshot = await client.getChatHistory(expectedSessionKey, CHAT_HISTORY_COMPLETION_PROBE_LIMIT)
-      .then((history) => getHistorySnapshot(history))
-      .catch(() => getUnknownHistorySnapshot());
     assertSessionInterruptionEpoch(sessionId, sessionInterruptionEpoch);
 
     const { runId, sessionKey: finalSessionKey } = await client.sendChatMessageStreaming({

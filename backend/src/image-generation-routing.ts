@@ -83,6 +83,27 @@ function hasDirectImageRequest(prompt: string): boolean {
   return DIRECT_IMAGE_REQUEST_PATTERNS.some((pattern) => pattern.test(prompt));
 }
 
+const NEGATED_CONTEXT_IMAGE_PATTERNS = [
+  /(?:不要|不再|禁止|别|无需|不应|不能|避免)[^。！？\n]{0,16}(?:画图|绘图|出图|生图|生成图片|生成图像|图像生成|绘图模型|图像生成模型)/i,
+  /(?:画图|绘图|出图|生图|生成图片|生成图像|图像生成|绘图模型|图像生成模型)[^。！？\n]{0,16}(?:不要|不再|禁止|别|无需|不应|不能|避免)/i,
+];
+
+const DEFAULT_IMAGE_CONTEXT_PATTERNS = [
+  /(?:默认|总是|始终|自动|直接|必须|优先)[^。！？\n]{0,32}(?:绘图模型|图像生成模型|图片生成模型|生图模型|image generation model)/i,
+  /(?:默认|总是|始终|自动|直接|必须|优先)[^。！？\n]{0,32}(?:画出来|画出|画图|绘图|出图|生图|生成图片|生成图像)/i,
+  /(?:只需|只要)[^。！？\n]{0,32}(?:画出来|画出|画图|绘图|出图|生图|生成图片|生成图像)/i,
+  /(?:绘图|画家|图像生成|图片生成|生图)[^。！？\n]{0,24}(?:智能体|agent|助手)/i,
+  /(?:调用|使用)[^。！？\n]{0,16}(?:绘图模型|图像生成模型|图片生成模型|生图模型)/i,
+];
+
+function hasDefaultImageGenerationContext(context: string): boolean {
+  if (!context) return false;
+  if (NEGATED_CONTEXT_IMAGE_PATTERNS.some((pattern) => pattern.test(context))) {
+    return false;
+  }
+  return DEFAULT_IMAGE_CONTEXT_PATTERNS.some((pattern) => pattern.test(context));
+}
+
 function countVisualPromptTokens(prompt: string): number {
   const normalized = prompt.toLowerCase();
   return VISUAL_PROMPT_TOKENS.reduce((count, token) => {
@@ -90,7 +111,15 @@ function countVisualPromptTokens(prompt: string): number {
   }, 0);
 }
 
-export function isLikelyImageGenerationPrompt(value: string): boolean {
+function normalizeContextValues(values?: Array<string | null | undefined> | string | null): string {
+  const list = Array.isArray(values) ? values : [values];
+  return normalizePrompt(list.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join('\n\n'));
+}
+
+export function isLikelyImageGenerationPrompt(
+  value: string,
+  contextValues?: Array<string | null | undefined> | string | null,
+): boolean {
   const prompt = normalizePrompt(value);
   if (!prompt) return false;
 
@@ -103,5 +132,18 @@ export function isLikelyImageGenerationPrompt(value: string): boolean {
     return false;
   }
 
-  return countVisualPromptTokens(prompt) >= 3;
+  if (countVisualPromptTokens(prompt) >= 3) {
+    return true;
+  }
+
+  const context = normalizeContextValues(contextValues);
+  if (!context) {
+    return false;
+  }
+
+  if (hasDefaultImageGenerationContext(context)) {
+    return true;
+  }
+
+  return countVisualPromptTokens(`${prompt} ${context}`) >= 3;
 }
