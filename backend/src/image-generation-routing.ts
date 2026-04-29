@@ -132,7 +132,8 @@ export function isLikelyImageGenerationPrompt(
     return false;
   }
 
-  if (countVisualPromptTokens(prompt) >= 3) {
+  const promptVisualTokenCount = countVisualPromptTokens(prompt);
+  if (promptVisualTokenCount >= 3) {
     return true;
   }
 
@@ -141,9 +142,11 @@ export function isLikelyImageGenerationPrompt(
     return false;
   }
 
-  if (hasDefaultImageGenerationContext(context)) {
+  // Agent bootstrap files can describe image tools, image models, or other agents.
+  // That context must never turn an ordinary message like "你好" into an image job.
+  if (hasDefaultImageGenerationContext(context) && promptVisualTokenCount >= 2) {
     return true;
   }
 
-  return countVisualPromptTokens(`${prompt} ${context}`) >= 3;
+  return promptVisualTokenCount >= 1 && countVisualPromptTokens(`${prompt} ${context}`) >= 3;
 }
