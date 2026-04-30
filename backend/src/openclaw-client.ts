@@ -2,6 +2,9 @@ import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 
+const CHAT_SEND_START_TIMEOUT_MS = 5 * 60 * 1000;
+const CHAT_HISTORY_TIMEOUT_MS = 90 * 1000;
+
 interface OpenClawConfig {
   gatewayUrl: string;
   token?: string;
@@ -511,7 +514,7 @@ export class OpenClawClient extends EventEmitter {
     return this.request('chat.history', {
       sessionKey,
       limit,
-    }, 30000);
+    }, CHAT_HISTORY_TIMEOUT_MS);
   }
 
   async getGatewayStatus(timeoutMs = 10000): Promise<any> {
@@ -563,7 +566,7 @@ export class OpenClawClient extends EventEmitter {
       message: params.message,
       attachments: params.attachments && params.attachments.length > 0 ? params.attachments : undefined,
       idempotencyKey: crypto.randomUUID(),
-    }, 30000);
+    }, CHAT_SEND_START_TIMEOUT_MS);
 
     const runId = started?.runId;
     if (!runId) throw new Error('chat.send did not return runId');
@@ -590,7 +593,7 @@ export class OpenClawClient extends EventEmitter {
       sessionKey: finalSessionKey,
       message: params.message,
       idempotencyKey: crypto.randomUUID(),
-    }, 30000);
+    }, CHAT_SEND_START_TIMEOUT_MS);
 
     const runId = started?.runId;
     if (!runId) throw new Error('chat.send did not return runId');
@@ -600,7 +603,7 @@ export class OpenClawClient extends EventEmitter {
     const history = await this.request('chat.history', {
       sessionKey: finalSessionKey,
       limit: 20,
-    }, 30000);
+    }, CHAT_HISTORY_TIMEOUT_MS);
 
     const text = this.extractLatestAssistantText(history);
     return text || 'No assistant text found in response.';

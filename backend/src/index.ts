@@ -568,6 +568,7 @@ const OPENCLAW_GATEWAY_READY_PROBE_STEP_TIMEOUT_MS = 2000;
 const OPENCLAW_GATEWAY_READY_RESULT_CACHE_TTL_MS = 3000;
 const OPENCLAW_GATEWAY_RESTART_STABLE_WINDOW_MS = 20 * 1000;
 const OPENCLAW_UPDATE_RUNTIME_RECONCILE_INTERVAL_MS = 1200;
+const OPENCLAW_UPDATE_GATEWAY_RECOVERY_POLL_INTERVAL_MS = 5 * 1000;
 const OPENCLAW_UPDATE_SUCCESS_AUTO_RESET_MS = 5000;
 const OPENCLAW_GATEWAY_SERVICE_NAME = 'openclaw-gateway.service';
 const HOST_TAKEOVER_SYSTEM_HELPER_PATH = '/usr/local/lib/openclaw-host-takeover/run';
@@ -1123,7 +1124,7 @@ function scheduleOpenClawUpdateSuccessFinalization(options: {
       appendOpenClawUpdateLog('Waiting for OpenClaw gateway connection to stabilize after the update.');
       await waitForGatewayConnectionStable(BROWSER_HEADED_MODE_RESTART_TIMEOUT_MS, {
         minimumStableWindowMs: OPENCLAW_GATEWAY_RESTART_STABLE_WINDOW_MS,
-        probeIntervalMs: OPENCLAW_UPDATE_RUNTIME_RECONCILE_INTERVAL_MS,
+        probeIntervalMs: OPENCLAW_UPDATE_GATEWAY_RECOVERY_POLL_INTERVAL_MS,
       });
       patchOpenClawUpdateSnapshot({
         status: 'update_succeeded',
@@ -1229,6 +1230,37 @@ async function reconcileOpenClawUpdateSnapshotFromRuntime() {
 async function buildOpenClawUpdateStatusResponseAsync(): Promise<OpenClawUpdateSnapshot> {
   await reconcileOpenClawUpdateSnapshotFromRuntime();
   return buildOpenClawUpdateStatusResponse();
+}
+
+async function continueOpenClawUpdateRecoveryIfTargetVersionInstalled(options: {
+  latestVersion: string;
+  detail: string;
+}): Promise<boolean> {
+  const observedVersion = await readOpenClawVersion();
+  if (observedVersion !== options.latestVersion) {
+    return false;
+  }
+
+  patchOpenClawUpdatePhaseState('verifying-version', {
+    currentVersion: observedVersion,
+    latestVersion: options.latestVersion,
+    canCancel: false,
+    rawDetail: null,
+  });
+  appendOpenClawUpdateLog(
+    `OpenClaw ${observedVersion} is installed; continuing gateway recovery checks every ${
+      Math.round(OPENCLAW_UPDATE_GATEWAY_RECOVERY_POLL_INTERVAL_MS / 1000)
+    } seconds instead of failing on the first restart probe.`
+  );
+  if (options.detail) {
+    appendOpenClawUpdateLog(`Initial gateway recovery detail: ${options.detail}`);
+  }
+  void scheduleOpenClawUpdateSuccessFinalization({
+    currentVersion: observedVersion,
+    latestVersion: options.latestVersion,
+    successLogMessage: `OpenClaw update completed successfully after gateway recovery. Current version: ${observedVersion}.`,
+  });
+  return true;
 }
 
 function collectOpenClawUpdateTextFragments(value: unknown, fragments: string[] = [], seen = new Set<string>()) {
@@ -1435,8 +1467,9 @@ async function startOpenClawUpdateTask() {
     resetOpenClawUpdateSnapshot();
     throw new StructuredRequestError(409, OPENCLAW_UPDATE_NO_NEW_VERSION_ERROR_CODE, 'No newer OpenClaw version is available.');
   }
+  const targetVersion = latestInfo.latestVersion;
 
-  const executablePath = await ensureResolvedOpenClawExecutablePath(latestInfo.latestVersion);
+  const executablePath = await ensureResolvedOpenClawExecutablePath(targetVersion);
   const child = spawn(executablePath, ['update', '--json', '--yes'], {
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -1455,10 +1488,10 @@ async function startOpenClawUpdateTask() {
   patchOpenClawUpdatePhaseState('download-package', {
     status: 'updating',
     currentVersion: latestInfo.currentVersion,
-    latestVersion: latestInfo.latestVersion,
+    latestVersion: targetVersion,
     rawDetail: null,
   });
-  appendOpenClawUpdateLog(`Starting OpenClaw update to ${latestInfo.latestVersion}.`);
+  appendOpenClawUpdateLog(`Starting OpenClaw update to ${targetVersion}.`);
 
   activeOpenClawUpdateProcess.phaseTimer = setTimeout(() => {
     if (
@@ -1508,7 +1541,7 @@ async function startOpenClawUpdateTask() {
     if (code === 0) {
       try {
         patchOpenClawUpdatePhaseState('repair-command-entrypoint');
-        const resolvedExecutablePath = await ensureResolvedOpenClawExecutablePath(latestInfo.latestVersion);
+        const resolvedExecutablePath = await ensureResolvedOpenClawExecutablePath(targetVersion);
         await ensureOpenClawShellEntrypoint(resolvedExecutablePath);
         appendOpenClawUpdateLog('Verified and repaired the OpenClaw shell entrypoint.');
         patchOpenClawUpdatePhaseState('verifying-version');
@@ -1534,6 +1567,14 @@ async function startOpenClawUpdateTask() {
 
     const detail = openClawUpdateSnapshot.rawDetail
       || `OpenClaw update exited with ${signal ? `signal ${signal}` : `code ${String(code)}`}.`;
+    const continuingRecovery = await continueOpenClawUpdateRecoveryIfTargetVersionInstalled({
+      latestVersion: targetVersion,
+      detail,
+    });
+    if (continuingRecovery) {
+      return;
+    }
+
     patchOpenClawUpdateSnapshot({
       status: 'update_failed',
       phase: 'running-update',
