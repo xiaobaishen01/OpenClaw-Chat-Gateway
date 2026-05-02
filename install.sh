@@ -15,12 +15,29 @@ restore_deploy_lockfiles() {
     git restore -- package-lock.json backend/package-lock.json frontend/package-lock.json 2>/dev/null || true
 }
 
+require_linux_systemd_host() {
+    local os_name
+    os_name="$(uname -s 2>/dev/null || echo unknown)"
+    if [ "$os_name" != "Linux" ]; then
+        echo -e "${RED}错误: 当前系统是 $os_name。${NC}"
+        echo -e "${RED}OpenClaw Chat Gateway 一键部署目前只支持已安装 OpenClaw 的 Linux 原生主机。${NC}"
+        echo -e "${BLUE}macOS 没有 systemd，不能使用此安装脚本部署后台服务。${NC}"
+        exit 1
+    fi
+    if ! command -v systemctl &> /dev/null; then
+        echo -e "${RED}错误: 未检测到 systemctl。请在支持 user-level systemd 的 Linux 主机上安装。${NC}"
+        exit 1
+    fi
+}
+
 echo -e "${BLUE}================================================${NC}"
 echo -e "${BLUE}    OpenClaw Chat Gateway - 一键安装脚本       ${NC}"
 echo -e "${BLUE}================================================${NC}"
 
 # Check for Prerequisites
 echo -e "\n${BLUE}步骤 1: 检查运行环境...${NC}"
+
+require_linux_systemd_host
 
 if ! command -v git &> /dev/null; then
     echo -e "${RED}错误: 未安装 git。请先安装 git。${NC}"

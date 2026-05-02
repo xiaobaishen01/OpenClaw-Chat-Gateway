@@ -16,6 +16,10 @@ NC='\033[0m' # No Color
 SERVICE_DIR="$HOME/.config/systemd/user"
 DB_PATH="$HOME/.clawui/clawui.sqlite"
 WORKSPACE_BASE="$HOME/.openclaw"
+HAS_SYSTEMCTL=0
+if command -v systemctl &>/dev/null; then
+    HAS_SYSTEMCTL=1
+fi
 SERVICES=$(ls $SERVICE_DIR/clawui-*.service 2>/dev/null || true)
 if [ -f "$SERVICE_DIR/clawui.service" ]; then
     SERVICES="$SERVICES $SERVICE_DIR/clawui.service"
@@ -106,14 +110,18 @@ fi
 
 # 停止并移除服务
 echo -e "\n${BLUE}步骤 1: 正在停止并移除系统服务...${NC}"
-for S_PATH in $SERVICES; do
-    S_FILE=$(basename "$S_PATH")
-    echo "正在停止服务: $S_FILE"
-    systemctl --user stop "$S_FILE" 2>/dev/null || true
-    systemctl --user disable "$S_FILE" 2>/dev/null || true
-    rm "$S_PATH"
-done
-systemctl --user daemon-reload
+if [ "$HAS_SYSTEMCTL" = "1" ]; then
+    for S_PATH in $SERVICES; do
+        S_FILE=$(basename "$S_PATH")
+        echo "正在停止服务: $S_FILE"
+        systemctl --user stop "$S_FILE" 2>/dev/null || true
+        systemctl --user disable "$S_FILE" 2>/dev/null || true
+        rm "$S_PATH"
+    done
+    systemctl --user daemon-reload
+else
+    echo "未检测到 systemctl，跳过系统服务停止步骤。"
+fi
 
 # 移除数据和日志
 echo -e "\n${BLUE}步骤 2: 正在清理本项目相关的数据和设置...${NC}"

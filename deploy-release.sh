@@ -17,9 +17,26 @@ restore_deploy_lockfiles() {
     git restore -- package-lock.json backend/package-lock.json frontend/package-lock.json 2>/dev/null || true
 }
 
+require_linux_systemd_host() {
+    local os_name
+    os_name="$(uname -s 2>/dev/null || echo unknown)"
+    if [ "$os_name" != "Linux" ]; then
+        echo "Error: current OS is $os_name."
+        echo "OpenClaw Chat Gateway deployment currently supports only native Linux hosts with OpenClaw installed."
+        echo "macOS does not provide systemd, so this script cannot install the background service."
+        exit 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "Error: systemctl was not found. Please deploy on a Linux host with user-level systemd."
+        exit 1
+    fi
+}
+
 # Default Port
 CLAWUI_PORT=${1:-3115}
 SERVICE_NAME="clawui-${CLAWUI_PORT}"
+
+require_linux_systemd_host
 
 # Build steps need devDependencies even when the service environment sets NODE_ENV=production.
 export NPM_CONFIG_PRODUCTION=false

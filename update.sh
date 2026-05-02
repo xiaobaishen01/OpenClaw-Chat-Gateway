@@ -9,6 +9,23 @@ emit_phase() {
     echo "::clawui-update-phase::$1"
 }
 
+require_linux_systemd_host() {
+    local os_name
+    os_name="$(uname -s 2>/dev/null || echo unknown)"
+    if [ "$os_name" != "Linux" ]; then
+        echo "Error: current OS is $os_name."
+        echo "OpenClaw Chat Gateway update currently supports only native Linux hosts with OpenClaw installed."
+        echo "macOS does not provide systemd, so this script cannot upgrade the background service."
+        exit 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "Error: systemctl was not found. Please update on a Linux host with user-level systemd."
+        exit 1
+    fi
+}
+
+require_linux_systemd_host
+
 if [ -f "deploy-release.sh" ]; then
     PROJECT_ROOT="$(pwd)"
 elif [ -d "$INSTALL_DIR" ]; then
